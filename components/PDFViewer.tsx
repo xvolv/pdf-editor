@@ -84,10 +84,29 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
       const canvas = canvasRef.current;
       if (!wrapper || !canvas) return;
       const rect = wrapper.getBoundingClientRect();
-      canvas.width = Math.max(1, Math.floor(rect.width));
-      canvas.height = Math.max(1, Math.floor(rect.height));
-      canvas.style.width = `${Math.floor(rect.width)}px`;
-      canvas.style.height = `${Math.floor(rect.height)}px`;
+      const newW = Math.max(1, Math.floor(rect.width));
+      const newH = Math.max(1, Math.floor(rect.height));
+      // preserve existing drawings when resizing
+      const prevW = canvas.width;
+      const prevH = canvas.height;
+      if (prevW > 0 && prevH > 0) {
+        const temp = document.createElement('canvas');
+        temp.width = prevW;
+        temp.height = prevH;
+        const tctx = temp.getContext('2d');
+        if (tctx) tctx.drawImage(canvas, 0, 0);
+        canvas.width = newW;
+        canvas.height = newH;
+        canvas.style.width = `${newW}px`;
+        canvas.style.height = `${newH}px`;
+        const ctx2 = canvas.getContext('2d');
+        if (ctx2) ctx2.drawImage(temp, 0, 0, newW, newH);
+      } else {
+        canvas.width = newW;
+        canvas.height = newH;
+        canvas.style.width = `${newW}px`;
+        canvas.style.height = `${newH}px`;
+      }
     });
   }, []);
 
@@ -141,15 +160,27 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
     };
   }, [handleKeyDown]);
 
-  // Keep overlay sizes in sync when view changes
+  // Keep overlay sizes in sync when zoom/rotation changes; preserve drawings
   useEffect(() => {
     const wrapper = pageWrapperRef.current;
     const canvas = canvasRef.current;
     if (!wrapper || !canvas) return;
     const rect = wrapper.getBoundingClientRect();
-    canvas.width = Math.max(1, Math.floor(rect.width));
-    canvas.height = Math.max(1, Math.floor(rect.height));
-  }, [scale, rotation, currentPage]);
+    const newW = Math.max(1, Math.floor(rect.width));
+    const newH = Math.max(1, Math.floor(rect.height));
+    const prevW = canvas.width;
+    const prevH = canvas.height;
+    if (prevW === newW && prevH === newH) return;
+    const temp = document.createElement('canvas');
+    temp.width = prevW;
+    temp.height = prevH;
+    const tctx = temp.getContext('2d');
+    if (tctx) tctx.drawImage(canvas, 0, 0);
+    canvas.width = newW;
+    canvas.height = newH;
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.drawImage(temp, 0, 0, newW, newH);
+  }, [scale, rotation]);
 
   useEffect(() => {
     const onResize = () => {
@@ -157,11 +188,22 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
       const canvas = canvasRef.current;
       if (!wrapper || !canvas) return;
       const rect = wrapper.getBoundingClientRect();
-      canvas.width = Math.max(1, Math.floor(rect.width));
-      canvas.height = Math.max(1, Math.floor(rect.height));
-      // keep CSS size in sync to avoid scaling blur
-      canvas.style.width = `${Math.floor(rect.width)}px`;
-      canvas.style.height = `${Math.floor(rect.height)}px`;
+      const newW = Math.max(1, Math.floor(rect.width));
+      const newH = Math.max(1, Math.floor(rect.height));
+      const prevW = canvas.width;
+      const prevH = canvas.height;
+      if (prevW === newW && prevH === newH) return;
+      const temp = document.createElement('canvas');
+      temp.width = prevW;
+      temp.height = prevH;
+      const tctx = temp.getContext('2d');
+      if (tctx) tctx.drawImage(canvas, 0, 0);
+      canvas.width = newW;
+      canvas.height = newH;
+      canvas.style.width = `${newW}px`;
+      canvas.style.height = `${newH}px`;
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.drawImage(temp, 0, 0, newW, newH);
     };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
