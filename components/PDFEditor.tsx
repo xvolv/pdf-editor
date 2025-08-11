@@ -33,6 +33,7 @@ export default function PDFEditor() {
   });
 
   const [selectedTool, setSelectedTool] = useState<string>('select');
+  const [selectedColor, setSelectedColor] = useState<string>('#000000');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -264,6 +265,8 @@ export default function PDFEditor() {
               onToolSelect={setSelectedTool}
               scale={state.scale}
               onScaleChange={handleScaleChange}
+              selectedColor={selectedColor}
+              onColorSelect={setSelectedColor}
             />
             
             <div className="flex-1 overflow-y-auto p-4">
@@ -292,6 +295,7 @@ export default function PDFEditor() {
               onPageChange={handlePageNavigation}
               annotations={state.annotations}
               isLoading={state.isLoading}
+              selectedColor={selectedColor}
             />
           )}
         </div>

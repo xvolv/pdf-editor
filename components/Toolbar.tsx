@@ -22,6 +22,8 @@ interface ToolbarProps {
   onToolSelect: (tool: string) => void;
   scale: number;
   onScaleChange: (scale: number) => void;
+  selectedColor?: string;
+  onColorSelect?: (color: string) => void;
 }
 
 const tools = [
@@ -38,7 +40,9 @@ export default function Toolbar({
   selectedTool, 
   onToolSelect, 
   scale, 
-  onScaleChange 
+  onScaleChange,
+  selectedColor = '#000000',
+  onColorSelect,
 }: ToolbarProps) {
   const handleZoomIn = () => {
     onScaleChange(Math.min(scale + 0.25, 3.0));
@@ -135,9 +139,10 @@ export default function Toolbar({
             ].map((color) => (
               <button
                 key={color}
-                className="w-8 h-8 rounded border-2 border-gray-300 hover:border-gray-400 transition-colors"
+                className={`w-8 h-8 rounded border-2 transition-colors ${selectedColor === color ? 'border-blue-600' : 'border-gray-300 hover:border-gray-400'}`}
                 style={{ backgroundColor: color }}
-                onClick={() => {/* Handle color selection */}}
+                onClick={() => onColorSelect && onColorSelect(color)}
+                aria-label={`Select color ${color}`}
               />
             ))}
           </div>
