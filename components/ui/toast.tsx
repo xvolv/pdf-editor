@@ -122,10 +122,5 @@ type ToastActionElement = React.ReactElement<typeof ToastAction>
 //   ToastProvider,
 //   ToastViewport,
 //   Toast,
-//   ToastTitle,
-//   ToastDescription,
-//   ToastAction,
-//   ToastClose,
-// }
-
 export { Toast, ToastClose, ToastDescription, ToastProvider, ToastTitle, ToastViewport }
+export type { ToastProps, ToastActionElement }
