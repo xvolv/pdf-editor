@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
-import { Upload, Download, Plus, Minus, RotateCcw, Save } from 'lucide-react';
+import { Upload, Download, Plus, Minus, RotateCcw, Save, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
@@ -35,9 +35,15 @@ export default function PDFEditor() {
   const [selectedTool, setSelectedTool] = useState<string>('select');
   const [selectedColor, setSelectedColor] = useState<string>('#000000');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [theme, setTheme] = useState<'classic' | 'modern'>('classic');
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const viewerRef = useRef<PDFViewerHandle | null>(null);
+  // Sidebar resize state
+  const [sidebarWidth, setSidebarWidth] = useState<number>(256); // px
+  const [isResizing, setIsResizing] = useState<boolean>(false);
+  const startXRef = useRef<number>(0);
+  const startWidthRef = useRef<number>(256);
 
   const handleFileUpload = useCallback(async (file: File) => {
     setState(prev => ({ ...prev, isLoading: true }));
@@ -71,6 +77,29 @@ export default function PDFEditor() {
       setState(prev => ({ ...prev, isLoading: false }));
     }
   }, [toast]);
+
+  // Sidebar resize handlers
+  const onResizerMouseMove = useCallback((e: MouseEvent) => {
+    if (!isResizing) return;
+    const dx = e.clientX - startXRef.current;
+    const next = Math.min(Math.max(startWidthRef.current + dx, 200), 480); // clamp 200-480px
+    setSidebarWidth(next);
+  }, [isResizing]);
+
+  const stopResizing = useCallback(() => {
+    if (!isResizing) return;
+    setIsResizing(false);
+    document.removeEventListener('mousemove', onResizerMouseMove as any);
+    document.removeEventListener('mouseup', stopResizing as any);
+  }, [isResizing, onResizerMouseMove]);
+
+  const startResizing = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    setIsResizing(true);
+    startXRef.current = e.clientX;
+    startWidthRef.current = sidebarWidth;
+    document.addEventListener('mousemove', onResizerMouseMove as any);
+    document.addEventListener('mouseup', stopResizing as any);
+  }, [sidebarWidth, onResizerMouseMove, stopResizing]);
 
   const handleDownload = useCallback(async () => {
     if (!state.pdfDocument) {
@@ -223,7 +252,11 @@ export default function PDFEditor() {
   }, [state.pdfDocument, state.currentPage, state.totalPages, toast]);
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50">
+    <div className={
+      `h-screen flex flex-col ${theme === 'modern' 
+        ? 'bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100' 
+        : 'bg-gray-50 text-gray-900'}`
+    }>
       <input
         ref={fileInputRef}
         type="file"
@@ -233,15 +266,17 @@ export default function PDFEditor() {
       />
       
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+      <header className={`${theme === 'modern' 
+        ? 'bg-slate-900/60 border-slate-700 text-slate-100 backdrop-blur supports-[backdrop-filter]:bg-slate-900/40' 
+        : 'bg-white border-gray-200'} border-b px-4 py-3 flex items-center justify-between`}>
         <div className="flex items-center space-x-4">
-          <h1 className="text-xl font-semibold text-gray-900">PDF Editor</h1>
+          <h1 className={`text-xl font-semibold ${theme === 'modern' ? 'text-slate-100' : 'text-gray-900'}`}>PDF Editor</h1>
           <div className="hidden sm:flex items-center space-x-2">
             <Button
               variant="outline"
               size="sm"
               onClick={handleNewFile}
-              className="flex items-center space-x-2"
+              className={`flex items-center space-x-2 ${theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}`}
             >
               <Upload className="w-4 h-4" />
               <span>Upload</span>
@@ -252,7 +287,7 @@ export default function PDFEditor() {
                 size="sm"
                 onClick={handleDownload}
                 disabled={state.isLoading}
-                className="flex items-center space-x-2"
+                className={`flex items-center space-x-2 ${theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}`}
               >
                 <Download className="w-4 h-4" />
                 <span>Download</span>
@@ -263,7 +298,7 @@ export default function PDFEditor() {
 
         {state.pdfFile && (
           <div className="flex items-center space-x-4">
-            <span className="text-sm text-gray-600">
+            <span className={`text-sm ${theme === 'modern' ? 'text-slate-300' : 'text-gray-600'}`}>
               Page {state.currentPage} of {state.totalPages}
             </span>
             <div className="flex items-center space-x-1">
@@ -273,6 +308,7 @@ export default function PDFEditor() {
                 onClick={handleAddPage}
                 disabled={state.isLoading}
                 title="Add Page"
+                className={theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}
               >
                 <Plus className="w-4 h-4" />
               </Button>
@@ -282,18 +318,42 @@ export default function PDFEditor() {
                 onClick={handleRemovePage}
                 disabled={state.isLoading || state.totalPages <= 1}
                 title="Remove Page"
+                className={theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}
               >
                 <Minus className="w-4 h-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setTheme(prev => {
+                    const next = prev === 'classic' ? 'modern' : 'classic';
+                    // Improve contrast: when switching to modern, default to white draw/text color if currently black
+                    if (next === 'modern' && selectedColor === '#000000') {
+                      setSelectedColor('#FFFFFF');
+                    }
+                    return next;
+                  });
+                }}
+                title="Toggle Theme"
+                className={theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}
+              >
+                <Sparkles className="w-4 h-4" />
               </Button>
             </div>
           </div>
         )}
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className={`flex-1 flex overflow-hidden min-h-0 ${isResizing ? 'select-none cursor-col-resize' : ''}`}>
         {/* Sidebar */}
         {state.pdfFile && sidebarOpen && (
-          <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
+          <div
+            className={`${theme === 'modern' 
+              ? 'bg-slate-900/40 border-slate-700' 
+              : 'bg-white border-gray-200'} border-r flex flex-col overflow-y-auto min-h-0`}
+            style={{ width: `${sidebarWidth}px` }}
+          >
             <Toolbar
               selectedTool={selectedTool}
               onToolSelect={setSelectedTool}
@@ -301,6 +361,7 @@ export default function PDFEditor() {
               onScaleChange={handleScaleChange}
               selectedColor={selectedColor}
               onColorSelect={setSelectedColor}
+              theme={theme}
             />
             
             <div className="flex-1 overflow-y-auto p-4">
@@ -314,8 +375,18 @@ export default function PDFEditor() {
           </div>
         )}
 
+        {state.pdfFile && sidebarOpen && (
+          <div
+            onMouseDown={startResizing}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            className={`w-1 cursor-col-resize hover:bg-slate-500/20 active:bg-slate-500/30 ${theme === 'modern' ? 'bg-slate-700/10' : 'bg-gray-200/50'}`}
+          />
+        )}
+
         {/* Main Content */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-auto min-h-0">
           {!state.pdfFile ? (
             <div className="flex-1 flex items-center justify-center">
               <FileUploader onFileSelect={handleFileUpload} />
@@ -331,6 +402,7 @@ export default function PDFEditor() {
               annotations={state.annotations}
               isLoading={state.isLoading}
               selectedColor={selectedColor}
+              theme={theme}
             />
           )}
         </div>

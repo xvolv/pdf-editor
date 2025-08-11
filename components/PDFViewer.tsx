@@ -32,6 +32,7 @@ interface PDFViewerProps {
   annotations: any[];
   isLoading?: boolean;
   selectedColor?: string;
+  theme?: 'classic' | 'modern';
 }
 
 const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer({
@@ -43,6 +44,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   annotations,
   isLoading = false,
   selectedColor = '#000000',
+  theme = 'classic',
 }: PDFViewerProps, ref) {
   const [numPages, setNumPages] = useState<number>(0);
   const [pageLoading, setPageLoading] = useState<boolean>(true);
@@ -505,20 +507,23 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-100">
+    <div className="flex-1 min-h-0 flex flex-col bg-gray-100">
       {/* Viewer Controls */}
-      <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between">
+      <div className={`${theme === 'modern'
+        ? 'bg-slate-900/60 border-slate-700 text-slate-100 backdrop-blur supports-[backdrop-filter]:bg-slate-900/40'
+        : 'bg-white border-gray-200'} border-b px-4 py-2 flex items-center justify-between`}>
         <div className="flex items-center space-x-2">
           <Button
             variant="outline"
             size="sm"
             onClick={handlePrevPage}
             disabled={currentPage <= 1}
+            className={theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}
           >
             <ChevronLeft className="w-4 h-4" />
           </Button>
           
-          <span className="text-sm text-gray-600 min-w-[100px] text-center">
+          <span className={`text-sm ${theme === 'modern' ? 'text-slate-300' : 'text-gray-600'} min-w-[100px] text-center`}>
             {currentPage} / {numPages}
           </span>
           
@@ -527,6 +532,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
             size="sm"
             onClick={handleNextPage}
             disabled={currentPage >= numPages}
+            className={theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}
           >
             <ChevronRight className="w-4 h-4" />
           </Button>
@@ -537,11 +543,12 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
             variant="outline"
             size="sm"
             onClick={handleRotate}
+            className={theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}
           >
             <RotateCcw className="w-4 h-4" />
           </Button>
           
-          <span className="text-sm text-gray-600">
+          <span className={`text-sm ${theme === 'modern' ? 'text-slate-300' : 'text-gray-600'}`}>
             {Math.round(scale * 100)}%
           </span>
         </div>
@@ -550,7 +557,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
       {/* PDF Display */}
       <div 
         ref={containerRef}
-        className="flex-1 overflow-auto flex items-center justify-center p-4"
+        className="flex-1 min-h-0 overflow-auto flex items-start justify-center p-4"
       >
         <Card className="shadow-lg">
           <Document
