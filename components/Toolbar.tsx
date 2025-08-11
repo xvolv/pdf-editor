@@ -129,7 +129,7 @@ export default function Toolbar({
 
         <Separator />
 
-        {/* Color Palette */}
+        {/* Color Palette  */}
         <div className="space-y-3">
           <h3 className="text-sm font-medium text-gray-700">Colors</h3>
           <div className="grid grid-cols-4 gap-2">
