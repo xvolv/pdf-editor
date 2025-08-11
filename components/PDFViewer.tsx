@@ -20,6 +20,7 @@ const Page = dynamic(() => import('react-pdf').then(mod => ({ default: mod.Page 
 
 export interface PDFViewerHandle {
   getCurrentOverlayImage: () => Promise<{ dataUrl: string; width: number; height: number } | null>;
+  clearOverlays: () => void;
 }
 
 interface PDFViewerProps {
@@ -47,11 +48,15 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   const [pageLoading, setPageLoading] = useState<boolean>(true);
   const [rotation, setRotation] = useState<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
-  const pageWrapperRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const textOverlayRef = useRef<HTMLDivElement>(null);
-  const [isDrawing, setIsDrawing] = useState<boolean>(false);
-  const lastPointRef = useRef<{x:number;y:number}|null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const textOverlayRef = useRef<HTMLDivElement | null>(null);
+  const pageWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const lastPointRef = useRef<{ x: number; y: number } | null>(null);
+  // Selection/drag refs for 'select' tool
+  const selectedElRef = useRef<HTMLElement | null>(null);
+  const isDraggingRef = useRef(false);
+  const dragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   // Shape drawing support
   const shapeStartRef = useRef<{x:number;y:number}|null>(null);
   const baseImageDataRef = useRef<ImageData|null>(null);
@@ -149,6 +154,18 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
       case '-':
         event.preventDefault();
         // Handle zoom out
+        break;
+      case 'Delete':
+      case 'Backspace':
+        // Delete selected overlay element in select mode
+        if (selectedTool === 'select' && selectedElRef.current) {
+          event.preventDefault();
+          const el = selectedElRef.current;
+          const parent = el.parentElement;
+          if (parent) parent.removeChild(el);
+          selectedElRef.current = null;
+          isDraggingRef.current = false;
+        }
         break;
     }
   }, [handlePrevPage, handleNextPage]);
@@ -255,10 +272,49 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   };
 
   const handleTextOverlayMouseDown = (e: any) => {
-    if (selectedTool !== 'text' && selectedTool !== 'annotation') return;
-    e.preventDefault();
     const overlay = textOverlayRef.current;
     if (!overlay) return;
+
+    // Select mode: pick and drag existing elements
+    if (selectedTool === 'select') {
+      const target = e.target as HTMLElement;
+      // If clicked empty overlay, clear selection
+      if (target === overlay) {
+        if (selectedElRef.current) {
+          selectedElRef.current.style.outline = selectedElRef.current.getAttribute('data-outline') || 'none';
+          selectedElRef.current = null;
+        }
+        return;
+      }
+      // Find the editable box ancestor
+      let el: HTMLElement | null = target;
+      while (el && el !== overlay && el.contentEditable !== 'true') {
+        el = el.parentElement;
+      }
+      if (el && el.contentEditable === 'true') {
+        e.preventDefault();
+        // mark selection
+        if (selectedElRef.current && selectedElRef.current !== el) {
+          selectedElRef.current.style.outline = selectedElRef.current.getAttribute('data-outline') || 'none';
+        }
+        selectedElRef.current = el;
+        // store original outline so we can restore later
+        const prevOutline = el.style.outline || 'none';
+        el.setAttribute('data-outline', prevOutline);
+        el.style.outline = '1px dashed #2563eb';
+        // start dragging
+        const { x, y } = getRelativePosFromEl(overlay, e);
+        const left = parseFloat(el.style.left || '0');
+        const top = parseFloat(el.style.top || '0');
+        dragOffsetRef.current = { x: x - left, y: y - top };
+        isDraggingRef.current = true;
+      }
+      return;
+    }
+
+    // Create new text/annotation box
+    if (selectedTool !== 'text' && selectedTool !== 'annotation') return;
+    e.preventDefault();
     const { x, y } = getRelativePosFromEl(overlay, e);
     const div = document.createElement('div');
     div.contentEditable = 'true';
@@ -290,6 +346,23 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
         div.style.outline = 'none';
       }, { once: true });
     }, 0);
+  };
+
+  const handleOverlayMouseMove = (e: any) => {
+    if (!isDraggingRef.current || selectedTool !== 'select') return;
+    const overlay = textOverlayRef.current;
+    const el = selectedElRef.current;
+    if (!overlay || !el) return;
+    const { x, y } = getRelativePosFromEl(overlay, e);
+    const off = dragOffsetRef.current;
+    el.style.left = `${x - off.x}px`;
+    el.style.top = `${y - off.y}px`;
+  };
+
+  const handleOverlayMouseUp = () => {
+    if (isDraggingRef.current) {
+      isDraggingRef.current = false;
+    }
   };
 
   const handleCanvasMouseMove = (e: any) => {
@@ -360,7 +433,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
     return;
   }, [isDrawing]);
 
-  // Expose method to export overlays as PNG
+  // Expose methods to export and clear overlays
   useImperativeHandle(ref, () => ({
     getCurrentOverlayImage: async () => {
       const drawCanvas = canvasRef.current;
@@ -406,6 +479,17 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
 
       const dataUrl = out.toDataURL('image/png');
       return { dataUrl, width: w, height: h };
+    },
+    clearOverlays: () => {
+      const drawCanvas = canvasRef.current;
+      const textLayer = textOverlayRef.current;
+      if (drawCanvas) {
+        const ctx = drawCanvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      }
+      if (textLayer) {
+        while (textLayer.firstChild) textLayer.removeChild(textLayer.firstChild);
+      }
     }
   }), []);
 
@@ -508,8 +592,10 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
                 <div
                   ref={textOverlayRef}
                   className="absolute inset-0 z-20"
-                  style={{ pointerEvents: (selectedTool === 'text' || selectedTool === 'annotation') ? 'auto' : 'none', cursor: (selectedTool === 'text' || selectedTool === 'annotation') ? 'text' : 'default' }}
+                  style={{ pointerEvents: (selectedTool === 'text' || selectedTool === 'annotation' || selectedTool === 'select') ? 'auto' : 'none', cursor: selectedTool === 'select' ? 'move' : ((selectedTool === 'text' || selectedTool === 'annotation') ? 'text' : 'default') }}
                   onMouseDown={handleTextOverlayMouseDown}
+                  onMouseMove={handleOverlayMouseMove}
+                  onMouseUp={handleOverlayMouseUp}
                 />
               </div>
             )}

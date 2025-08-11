@@ -114,6 +114,22 @@ export default function PDFEditor() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
+      // Keep editing: update both the viewer File and the in-memory PDFDocument
+      const newFileName = `edited-${state.pdfFile?.name || 'document.pdf'}`;
+      const newFile = new File([pdfBytes], newFileName, { type: 'application/pdf' });
+      const reloadedDoc = await PDFDocument.load(pdfBytes);
+      const newPageCount = reloadedDoc.getPageCount();
+      setState(prev => ({
+        ...prev,
+        pdfFile: newFile,
+        pdfDocument: reloadedDoc,
+        totalPages: newPageCount,
+        // keep current page if still valid, otherwise clamp
+        currentPage: Math.min(prev.currentPage, newPageCount),
+      }));
+      // Clear overlay layers now that content is flattened
+      viewerRef.current?.clearOverlays?.();
+
       toast({
         title: "PDF Downloaded",
         description: "Your edited PDF has been downloaded successfully",
