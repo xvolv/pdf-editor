@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle } from 'react';
 import dynamic from 'next/dynamic';
-import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw, Undo2, Redo2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -80,6 +80,11 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   const shapeStartRef = useRef<{x:number;y:number}|null>(null);
   const baseImageDataRef = useRef<ImageData|null>(null);
 
+  // History stack for undo/redo (per page view)
+  type OverlaySnapshot = { draw?: { dataUrl: string; width: number; height: number } | null; textHTML: string };
+  const [history, setHistory] = useState<OverlaySnapshot[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+ 
   // Helper to apply a saved overlay state onto the current page layers
   const applyOverlayState = useCallback((state: { draw?: { dataUrl: string; width: number; height: number } | null; textHTML?: string; } | null) => {
     const canvas = canvasRef.current;
@@ -120,6 +125,42 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
       });
     }
   }, []);
+
+  const captureSnapshot = useCallback(() => {
+    const canvas = canvasRef.current;
+    const textLayer = textOverlayRef.current;
+    const draw = canvas ? { dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height } : null;
+    const textHTML = textLayer?.innerHTML || '';
+    const snap: OverlaySnapshot = { draw, textHTML };
+    setHistory(prev => {
+      // drop redo tail if any
+      const next = prev.slice(0, historyIndex + 1);
+      next.push(snap);
+      return next;
+    });
+    setHistoryIndex(i => i + 1);
+  }, [historyIndex]);
+
+  const undo = useCallback(() => {
+    setHistoryIndex(i => {
+      const ni = Math.max(0, i - 1);
+      // apply snapshot
+      const snap = history[ni];
+      if (snap) applyOverlayState({ draw: snap.draw || null, textHTML: snap.textHTML });
+      return ni;
+    });
+  }, [applyOverlayState, history]);
+
+  const redo = useCallback(() => {
+    setHistoryIndex(i => {
+      const ni = Math.min(history.length - 1, i + 1);
+      const snap = history[ni];
+      if (snap) applyOverlayState({ draw: snap.draw || null, textHTML: snap.textHTML });
+      return ni;
+    });
+  }, [applyOverlayState, history]);
+
+  
 
   // Set up PDF.js worker on client side only
   useEffect(() => {
@@ -172,6 +213,23 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
         event.preventDefault();
         handleNextPage();
         break;
+      case 'z':
+      case 'Z':
+        if (event.ctrlKey && !event.shiftKey) {
+          event.preventDefault();
+          undo();
+        } else if (event.ctrlKey && event.shiftKey) {
+          event.preventDefault();
+          redo();
+        }
+        break;
+      case 'y':
+      case 'Y':
+        if (event.ctrlKey) {
+          event.preventDefault();
+          redo();
+        }
+        break;
       case '+':
       case '=':
         event.preventDefault();
@@ -191,10 +249,12 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
           if (parent) parent.removeChild(el);
           selectedElRef.current = null;
           isDraggingRef.current = false;
+          // snapshot after delete
+          captureSnapshot();
         }
         break;
     }
-  }, [handlePrevPage, handleNextPage]);
+  }, [handlePrevPage, handleNextPage, undo, redo, selectedTool, captureSnapshot]);
 
   useEffect(() => {
     document.addEventListener('keydown', handleKeyDown);
@@ -243,11 +303,15 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
           // clear if no state saved
           applyOverlayState(null);
         }
+        // reset history for this page and seed with current view
+        setHistory([]);
+        setHistoryIndex(-1);
+        setTimeout(() => captureSnapshot(), 0);
       } catch (e) {
         // noop on restore failure
       }
     }
-  }, [applyOverlayState, currentPage, loadOverlayForPage, resizeOverlaysOnPageLoad]);
+  }, [applyOverlayState, currentPage, loadOverlayForPage, resizeOverlaysOnPageLoad, captureSnapshot]);
 
   useEffect(() => {
     const onResize = () => {
@@ -380,6 +444,20 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
       div.style.color = '#111827';
       if (!div.textContent || div.textContent.trim() === '') {
         div.textContent = 'Note...';
+        // mark as placeholder and style subtly until user types
+        div.setAttribute('data-placeholder', '1');
+        const originalColor = selectedColor;
+        div.setAttribute('data-original-color', originalColor);
+        div.style.color = '#9ca3af';
+        // When user focuses (starts typing), clear placeholder and restore color
+        const clearPlaceholderOnFocus = () => {
+          if (div.getAttribute('data-placeholder') === '1') {
+            div.textContent = '';
+            div.style.color = originalColor;
+            div.removeAttribute('data-placeholder');
+          }
+        };
+        div.addEventListener('focus', clearPlaceholderOnFocus, { once: true });
       }
     } else {
       div.style.outline = '1px dashed #9ca3af';
@@ -396,6 +474,8 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
         div.style.outline = 'none';
       }, { once: true });
     }, 0);
+    // Snapshot after creating a new text/annotation box
+    captureSnapshot();
   };
 
   const handleOverlayMouseMove = (e: any) => {
@@ -412,6 +492,8 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   const handleOverlayMouseUp = () => {
     if (isDraggingRef.current) {
       isDraggingRef.current = false;
+      // Take snapshot after finishing a drag/move
+      captureSnapshot();
     }
   };
 
@@ -471,6 +553,8 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
     lastPointRef.current = null;
     shapeStartRef.current = null;
     baseImageDataRef.current = null;
+    // Take snapshot after a drawing action completes
+    captureSnapshot();
   };
 
   // End drawing if mouse is released outside canvas
@@ -572,7 +656,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
       {/* Viewer Controls */}
       <div className={`${theme === 'modern'
         ? 'bg-slate-900/60 border-slate-700 text-slate-100 backdrop-blur supports-[backdrop-filter]:bg-slate-900/40'
-        : 'bg-white border-gray-200'} border-b px-4 py-2 flex items-center justify-between`}>
+        : 'bg-white border-gray-200'} border-b px-4 py-3 flex items-center justify-between sticky top-0 z-30`}> 
         <div className="flex items-center space-x-2">
           <Button
             variant="outline"
@@ -600,6 +684,28 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
         </div>
 
         <div className="flex items-center space-x-2">
+          {/* Undo / Redo */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={undo}
+            disabled={historyIndex <= 0}
+            className={theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}
+            aria-label="Undo"
+          >
+            <Undo2 className="w-4 h-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={redo}
+            disabled={historyIndex >= history.length - 1 || historyIndex < 0}
+            className={theme === 'modern' ? 'border-slate-600 bg-white text-slate-900 hover:bg-slate-100' : ''}
+            aria-label="Redo"
+          >
+            <Redo2 className="w-4 h-4" />
+          </Button>
+
           <Button
             variant="outline"
             size="sm"
@@ -620,7 +726,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
         ref={containerRef}
         className="flex-1 min-h-0 overflow-auto flex items-start justify-center p-4"
       >
-        <Card className="shadow-lg">
+        <Card className="shadow-xl rounded-xl">
           <Document
             file={file}
             onLoadSuccess={onDocumentLoadSuccess}
