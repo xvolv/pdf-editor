@@ -52,6 +52,9 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   const textOverlayRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const lastPointRef = useRef<{x:number;y:number}|null>(null);
+  // Shape drawing support
+  const shapeStartRef = useRef<{x:number;y:number}|null>(null);
+  const baseImageDataRef = useRef<ImageData|null>(null);
 
   // Set up PDF.js worker on client side only
   useEffect(() => {
@@ -178,12 +181,13 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   };
 
   const handleCanvasMouseDown = (e: any) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const { x, y } = getRelativePos(e);
+
     if (selectedTool === 'pen') {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      const { x, y } = getRelativePos(e);
       ctx.strokeStyle = selectedColor;
       ctx.lineWidth = 2;
       ctx.lineCap = 'round';
@@ -196,11 +200,20 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
       // draw a small dot so click without move leaves a mark
       ctx.lineTo(x + 0.01, y + 0.01);
       ctx.stroke();
+      return;
+    }
+
+    if (selectedTool === 'rectangle' || selectedTool === 'circle' || selectedTool === 'highlight') {
+      // take a snapshot for live preview
+      baseImageDataRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      shapeStartRef.current = { x, y };
+      setIsDrawing(true);
+      return;
     }
   };
 
   const handleTextOverlayMouseDown = (e: any) => {
-    if (selectedTool !== 'text') return;
+    if (selectedTool !== 'text' && selectedTool !== 'annotation') return;
     e.preventDefault();
     const overlay = textOverlayRef.current;
     if (!overlay) return;
@@ -213,9 +226,18 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
     div.style.minWidth = '40px';
     div.style.minHeight = '20px';
     div.style.padding = '2px 4px';
-    div.style.outline = '1px dashed #9ca3af';
-    div.style.color = selectedColor;
-    div.style.background = 'transparent';
+    if (selectedTool === 'annotation') {
+      div.style.outline = '1px solid #f59e0b';
+      div.style.background = 'rgba(255, 213, 128, 0.35)';
+      div.style.color = '#111827';
+      if (!div.textContent || div.textContent.trim() === '') {
+        div.textContent = 'Note...';
+      }
+    } else {
+      div.style.outline = '1px dashed #9ca3af';
+      div.style.background = 'transparent';
+      div.style.color = selectedColor;
+    }
     div.style.whiteSpace = 'pre-wrap';
     div.style.font = '16px sans-serif';
     (div.style as any).pointerEvents = 'auto';
@@ -229,18 +251,46 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   };
 
   const handleCanvasMouseMove = (e: any) => {
-    if (!isDrawing || selectedTool !== 'pen') return;
+    if (!isDrawing) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const { x, y } = getRelativePos(e);
-    const last = lastPointRef.current || { x, y };
-    ctx.beginPath();
-    ctx.moveTo(last.x, last.y);
-    ctx.lineTo(x, y);
-    ctx.stroke();
-    lastPointRef.current = { x, y };
+
+    if (selectedTool === 'pen') {
+      const last = lastPointRef.current || { x, y };
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      lastPointRef.current = { x, y };
+      return;
+    }
+
+    if ((selectedTool === 'rectangle' || selectedTool === 'circle' || selectedTool === 'highlight') && shapeStartRef.current && baseImageDataRef.current) {
+      // restore base image for preview
+      ctx.putImageData(baseImageDataRef.current, 0, 0);
+      const start = shapeStartRef.current;
+      const w = x - start.x;
+      const h = y - start.y;
+
+      if (selectedTool === 'rectangle') {
+        ctx.strokeStyle = selectedColor;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(start.x, start.y, w, h);
+      } else if (selectedTool === 'circle') {
+        ctx.strokeStyle = selectedColor;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(start.x + w / 2, start.y + h / 2, Math.abs(w) / 2, Math.abs(h) / 2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (selectedTool === 'highlight') {
+        ctx.fillStyle = 'rgba(255, 255, 0, 0.35)';
+        ctx.fillRect(start.x, start.y, w, h);
+      }
+      return;
+    }
   };
 
   const handleCanvasMouseUp = () => {
@@ -249,9 +299,13 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.closePath();
+    if (selectedTool === 'pen') {
+      ctx.closePath();
+    }
     setIsDrawing(false);
     lastPointRef.current = null;
+    shapeStartRef.current = null;
+    baseImageDataRef.current = null;
   };
 
   // End drawing if mouse is released outside canvas
@@ -403,13 +457,16 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
                   onMouseMove={handleCanvasMouseMove}
                   onMouseUp={handleCanvasMouseUp}
                   onMouseLeave={() => setIsDrawing(false)}
-                  style={{ pointerEvents: selectedTool === 'pen' ? 'auto' : 'none', cursor: selectedTool === 'pen' ? 'crosshair' : 'default' }}
+                  style={{
+                    pointerEvents: ['pen','rectangle','circle','highlight'].includes(selectedTool) ? 'auto' : 'none',
+                    cursor: ['pen','rectangle','circle','highlight'].includes(selectedTool) ? 'crosshair' : 'default'
+                  }}
                 />
                 {/* Text overlay container */}
                 <div
                   ref={textOverlayRef}
                   className="absolute inset-0 z-20"
-                  style={{ pointerEvents: selectedTool === 'text' ? 'auto' : 'none', cursor: selectedTool === 'text' ? 'text' : 'default' }}
+                  style={{ pointerEvents: (selectedTool === 'text' || selectedTool === 'annotation') ? 'auto' : 'none', cursor: (selectedTool === 'text' || selectedTool === 'annotation') ? 'text' : 'default' }}
                   onMouseDown={handleTextOverlayMouseDown}
                 />
               </div>
