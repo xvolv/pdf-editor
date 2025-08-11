@@ -21,6 +21,16 @@ const Page = dynamic(() => import('react-pdf').then(mod => ({ default: mod.Page 
 export interface PDFViewerHandle {
   getCurrentOverlayImage: () => Promise<{ dataUrl: string; width: number; height: number } | null>;
   clearOverlays: () => void;
+  // New: snapshot and restore full overlay state (draw layer + text layer + composite)
+  getOverlayState: () => Promise<{
+    composite?: { dataUrl: string; width: number; height: number } | null;
+    draw?: { dataUrl: string; width: number; height: number } | null;
+    textHTML: string;
+  }>;
+  setOverlayState: (state: {
+    draw?: { dataUrl: string; width: number; height: number } | null;
+    textHTML?: string;
+  } | null) => void;
 }
 
 interface PDFViewerProps {
@@ -33,6 +43,12 @@ interface PDFViewerProps {
   isLoading?: boolean;
   selectedColor?: string;
   theme?: 'classic' | 'modern';
+  // New: provide a callback to fetch saved overlay state for a given page
+  loadOverlayForPage?: (page: number) => {
+    composite?: { dataUrl: string; width: number; height: number } | null;
+    draw?: { dataUrl: string; width: number; height: number } | null;
+    textHTML?: string;
+  } | null;
 }
 
 const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer({
@@ -45,6 +61,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   isLoading = false,
   selectedColor = '#000000',
   theme = 'classic',
+  loadOverlayForPage,
 }: PDFViewerProps, ref) {
   const [numPages, setNumPages] = useState<number>(0);
   const [pageLoading, setPageLoading] = useState<boolean>(true);
@@ -62,6 +79,47 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   // Shape drawing support
   const shapeStartRef = useRef<{x:number;y:number}|null>(null);
   const baseImageDataRef = useRef<ImageData|null>(null);
+
+  // Helper to apply a saved overlay state onto the current page layers
+  const applyOverlayState = useCallback((state: { draw?: { dataUrl: string; width: number; height: number } | null; textHTML?: string; } | null) => {
+    const canvas = canvasRef.current;
+    const overlay = textOverlayRef.current;
+    const wrapper = pageWrapperRef.current;
+    if (!canvas || !overlay || !wrapper) return;
+
+    // Clear existing
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
+
+    if (!state) return;
+
+    // Draw layer: scale incoming image to current canvas size
+    if (state.draw && state.draw.dataUrl) {
+      const img = new Image();
+      img.onload = () => {
+        const rect = wrapper.getBoundingClientRect();
+        const w = Math.max(1, Math.floor(rect.width));
+        const h = Math.max(1, Math.floor(rect.height));
+        canvas.width = w; canvas.height = h;
+        const c = canvas.getContext('2d');
+        if (c) {
+          c.drawImage(img, 0, 0, w, h);
+        }
+      };
+      img.src = state.draw.dataUrl;
+    }
+
+    // Text layer: restore HTML
+    if (typeof state.textHTML === 'string') {
+      overlay.innerHTML = state.textHTML;
+      // ensure restored elements remain editable and pickable
+      overlay.querySelectorAll('[data-overlay-item]')?.forEach((el) => {
+        (el as HTMLElement).setAttribute('contenteditable', 'true');
+        (el as HTMLElement).style.userSelect = 'text';
+      });
+    }
+  }, []);
 
   // Set up PDF.js worker on client side only
   useEffect(() => {
@@ -81,40 +139,6 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   const onDocumentLoadError = useCallback((error: Error) => {
     console.error('Error loading PDF:', error);
     setPageLoading(false);
-  }, []);
-
-  const onPageLoadSuccess = useCallback(() => {
-    setPageLoading(false);
-    // Ensure overlay sizes match rendered page size
-    requestAnimationFrame(() => {
-      const wrapper = pageWrapperRef.current;
-      const canvas = canvasRef.current;
-      if (!wrapper || !canvas) return;
-      const rect = wrapper.getBoundingClientRect();
-      const newW = Math.max(1, Math.floor(rect.width));
-      const newH = Math.max(1, Math.floor(rect.height));
-      // preserve existing drawings when resizing
-      const prevW = canvas.width;
-      const prevH = canvas.height;
-      if (prevW > 0 && prevH > 0) {
-        const temp = document.createElement('canvas');
-        temp.width = prevW;
-        temp.height = prevH;
-        const tctx = temp.getContext('2d');
-        if (tctx) tctx.drawImage(canvas, 0, 0);
-        canvas.width = newW;
-        canvas.height = newH;
-        canvas.style.width = `${newW}px`;
-        canvas.style.height = `${newH}px`;
-        const ctx2 = canvas.getContext('2d');
-        if (ctx2) ctx2.drawImage(temp, 0, 0, newW, newH);
-      } else {
-        canvas.width = newW;
-        canvas.height = newH;
-        canvas.style.width = `${newW}px`;
-        canvas.style.height = `${newH}px`;
-      }
-    });
   }, []);
 
   const onPageLoadError = useCallback((error: Error) => {
@@ -180,7 +204,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
   }, [handleKeyDown]);
 
   // Keep overlay sizes in sync when zoom/rotation changes; preserve drawings
-  useEffect(() => {
+  const resizeOverlaysOnPageLoad = useCallback(() => {
     const wrapper = pageWrapperRef.current;
     const canvas = canvasRef.current;
     if (!wrapper || !canvas) return;
@@ -200,6 +224,30 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
     const ctx = canvas.getContext('2d');
     if (ctx) ctx.drawImage(temp, 0, 0, newW, newH);
   }, [scale, rotation]);
+
+  useEffect(() => {
+    resizeOverlaysOnPageLoad();
+  }, [resizeOverlaysOnPageLoad]);
+
+  // When a page finishes loading, ask parent for any saved overlay state and apply it
+  const onPageLoadSuccess = useCallback(() => {
+    // First, ensure overlays are sized to the rendered page
+    resizeOverlaysOnPageLoad();
+    // Then, try to restore any saved overlay state for this page
+    if (typeof loadOverlayForPage === 'function') {
+      try {
+        const state = loadOverlayForPage(currentPage);
+        if (state) {
+          applyOverlayState(state);
+        } else {
+          // clear if no state saved
+          applyOverlayState(null);
+        }
+      } catch (e) {
+        // noop on restore failure
+      }
+    }
+  }, [applyOverlayState, currentPage, loadOverlayForPage, resizeOverlaysOnPageLoad]);
 
   useEffect(() => {
     const onResize = () => {
@@ -492,6 +540,19 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer
       if (textLayer) {
         while (textLayer.firstChild) textLayer.removeChild(textLayer.firstChild);
       }
+    },
+    getOverlayState: async () => {
+      const canvas = canvasRef.current;
+      const textLayer = textOverlayRef.current;
+      let draw: { dataUrl: string; width: number; height: number } | null = null;
+      if (canvas) {
+        draw = { dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height };
+      }
+      const textHTML = textLayer?.innerHTML || '';
+      return { composite: null, draw, textHTML };
+    },
+    setOverlayState: (state) => {
+      applyOverlayState(state || null);
     }
   }), []);
 

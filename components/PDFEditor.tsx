@@ -50,6 +50,15 @@ export default function PDFEditor() {
   const startXRef = useRef<number>(0);
   const startWidthRef = useRef<number>(256);
 
+  // Per-page overlays storage
+  type OverlayBitmap = { dataUrl: string; width: number; height: number };
+  type PageOverlayState = {
+    composite?: OverlayBitmap | null;
+    draw?: OverlayBitmap | null;
+    textHTML?: string;
+  };
+  const [overlaysByPage, setOverlaysByPage] = useState<Record<number, PageOverlayState>>({});
+
   const handleFileUpload = useCallback(async (file: File) => {
     setState(prev => ({ ...prev, isLoading: true }));
     
@@ -90,6 +99,9 @@ export default function PDFEditor() {
         annotations: [],
         isLoading: false,
       }));
+
+      // Reset overlays map for new document
+      setOverlaysByPage({});
 
       // Clear any previous upgrade state on successful load
       setUpgradeRequired(null);
@@ -132,6 +144,24 @@ export default function PDFEditor() {
     document.addEventListener('mouseup', stopResizing as any);
   }, [sidebarWidth, onResizerMouseMove, stopResizing]);
 
+  const saveCurrentPageOverlay = useCallback(async () => {
+    if (!viewerRef.current) return;
+    try {
+      const [composite, snapshot] = await Promise.all([
+        viewerRef.current.getCurrentOverlayImage?.(),
+        viewerRef.current.getOverlayState?.(),
+      ]);
+      setOverlaysByPage(prev => ({
+        ...prev,
+        [state.currentPage]: {
+          composite: composite || null,
+          draw: snapshot?.draw || null,
+          textHTML: snapshot?.textHTML || '',
+        },
+      }));
+    } catch {}
+  }, [state.currentPage]);
+
   const handleDownload = useCallback(async () => {
     if (!state.pdfDocument) {
       toast({
@@ -144,22 +174,27 @@ export default function PDFEditor() {
 
     try {
       setState(prev => ({ ...prev, isLoading: true }));
-      // Flatten current page overlays (draw/text) into the PDF before saving
-      const overlay = await viewerRef.current?.getCurrentOverlayImage();
-      if (overlay) {
-        const pageIndex = Math.max(0, Math.min(state.currentPage - 1, state.totalPages - 1));
+      // Ensure current page overlays are saved
+      await saveCurrentPageOverlay();
+
+      // Flatten overlays for ALL pages
+      for (let i = 1; i <= state.totalPages; i++) {
+        const pageIndex = i - 1;
         const page = state.pdfDocument.getPage(pageIndex);
         const { width: pw, height: ph } = page.getSize();
-        const pngBytes = await fetch(overlay.dataUrl).then(r => r.arrayBuffer());
-        const pngEmbed = await state.pdfDocument.embedPng(pngBytes);
-        // Scale overlay to full page size
-        page.drawImage(pngEmbed, {
-          x: 0,
-          y: 0,
-          width: pw,
-          height: ph,
-          opacity: 1,
-        });
+        const pageOverlay = overlaysByPage[i];
+        const composite = pageOverlay?.composite;
+        if (composite && composite.dataUrl) {
+          const pngBytes = await fetch(composite.dataUrl).then(r => r.arrayBuffer());
+          const pngEmbed = await state.pdfDocument.embedPng(pngBytes);
+          page.drawImage(pngEmbed, {
+            x: 0,
+            y: 0,
+            width: pw,
+            height: ph,
+            opacity: 1,
+          });
+        }
       }
       
       const pdfBytes = await state.pdfDocument.save();
@@ -189,6 +224,8 @@ export default function PDFEditor() {
       }));
       // Clear overlay layers now that content is flattened
       viewerRef.current?.clearOverlays?.();
+      // Clear overlays store, since content is baked-in
+      setOverlaysByPage({});
 
       toast({
         title: "PDF Downloaded",
@@ -204,13 +241,21 @@ export default function PDFEditor() {
     } finally {
       setState(prev => ({ ...prev, isLoading: false }));
     }
-  }, [state.pdfDocument, state.pdfFile, toast]);
+  }, [
+    state.pdfDocument,
+    state.pdfFile,
+    state.totalPages,
+    state.currentPage,
+    overlaysByPage,
+    toast
+  ]);
 
-  const handlePageNavigation = useCallback((page: number) => {
-    if (page >= 1 && page <= state.totalPages) {
-      setState(prev => ({ ...prev, currentPage: page }));
-    }
-  }, [state.totalPages]);
+  const handlePageNavigation = useCallback(async (page: number) => {
+    if (page < 1 || page > state.totalPages) return;
+    // Save current page overlays before switching
+    await saveCurrentPageOverlay();
+    setState(prev => ({ ...prev, currentPage: page }));
+  }, [saveCurrentPageOverlay, state.totalPages]);
 
   const handleScaleChange = useCallback((newScale: number) => {
     setState(prev => ({ ...prev, scale: Math.max(0.5, Math.min(3.0, newScale)) }));
@@ -232,6 +277,9 @@ export default function PDFEditor() {
         totalPages: newPageCount,
         currentPage: newPageCount,
       }));
+
+      // Initialize overlay entry for the new page (empty)
+      setOverlaysByPage(prev => ({ ...prev, [newPageCount]: {} }));
 
       toast({
         title: "Page Added",
@@ -267,6 +315,21 @@ export default function PDFEditor() {
         totalPages: newPageCount,
         currentPage: newCurrentPage,
       }));
+
+      // Reindex overlays map for pages after the removed one
+      setOverlaysByPage(prev => {
+        const removed = state.currentPage; // 1-based index
+        const next: Record<number, PageOverlayState> = {};
+        for (let i = 1; i <= newPageCount; i++) {
+          // For i before removed, copy as-is; for i >= removed, shift from i+1
+          if (i < removed) {
+            if (prev[i]) next[i] = prev[i];
+          } else {
+            if (prev[i + 1]) next[i] = prev[i + 1];
+          }
+        }
+        return next;
+      });
 
       toast({
         title: "Page Removed",
@@ -462,6 +525,7 @@ export default function PDFEditor() {
               isLoading={state.isLoading}
               selectedColor={selectedColor}
               theme={theme}
+              loadOverlayForPage={(p) => overlaysByPage[p] || null}
             />
           )}
         </div>
