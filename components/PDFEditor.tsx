@@ -5,7 +5,7 @@ import { Upload, Download, Plus, Minus, RotateCcw, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
-import PDFViewer from './PDFViewer';
+import PDFViewer, { type PDFViewerHandle } from './PDFViewer';
 import Toolbar from './Toolbar';
 import PageManager from './PageManager';
 import FileUploader from './FileUploader';
@@ -37,6 +37,7 @@ export default function PDFEditor() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const viewerRef = useRef<PDFViewerHandle | null>(null);
 
   const handleFileUpload = useCallback(async (file: File) => {
     setState(prev => ({ ...prev, isLoading: true }));
@@ -83,6 +84,23 @@ export default function PDFEditor() {
 
     try {
       setState(prev => ({ ...prev, isLoading: true }));
+      // Flatten current page overlays (draw/text) into the PDF before saving
+      const overlay = await viewerRef.current?.getCurrentOverlayImage();
+      if (overlay) {
+        const pageIndex = Math.max(0, Math.min(state.currentPage - 1, state.totalPages - 1));
+        const page = state.pdfDocument.getPage(pageIndex);
+        const { width: pw, height: ph } = page.getSize();
+        const pngBytes = await fetch(overlay.dataUrl).then(r => r.arrayBuffer());
+        const pngEmbed = await state.pdfDocument.embedPng(pngBytes);
+        // Scale overlay to full page size
+        page.drawImage(pngEmbed, {
+          x: 0,
+          y: 0,
+          width: pw,
+          height: ph,
+          opacity: 1,
+        });
+      }
       
       const pdfBytes = await state.pdfDocument.save();
       const blob = new Blob([pdfBytes], { type: 'application/pdf' });
@@ -288,6 +306,7 @@ export default function PDFEditor() {
             </div>
           ) : (
             <PDFViewer
+              ref={viewerRef}
               file={state.pdfFile}
               currentPage={state.currentPage}
               scale={state.scale}

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle } from 'react';
 import dynamic from 'next/dynamic';
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -18,6 +18,10 @@ const Page = dynamic(() => import('react-pdf').then(mod => ({ default: mod.Page 
   loading: () => <Skeleton className="w-[600px] h-[800px]" />
 });
 
+export interface PDFViewerHandle {
+  getCurrentOverlayImage: () => Promise<{ dataUrl: string; width: number; height: number } | null>;
+}
+
 interface PDFViewerProps {
   file: File;
   currentPage: number;
@@ -29,7 +33,7 @@ interface PDFViewerProps {
   selectedColor?: string;
 }
 
-export default function PDFViewer({
+const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(function PDFViewer({
   file,
   currentPage,
   scale,
@@ -38,7 +42,7 @@ export default function PDFViewer({
   annotations,
   isLoading = false,
   selectedColor = '#000000',
-}: PDFViewerProps) {
+}: PDFViewerProps, ref) {
   const [numPages, setNumPages] = useState<number>(0);
   const [pageLoading, setPageLoading] = useState<boolean>(true);
   const [rotation, setRotation] = useState<number>(0);
@@ -260,6 +264,55 @@ export default function PDFViewer({
     return;
   }, [isDrawing]);
 
+  // Expose method to export overlays as PNG
+  useImperativeHandle(ref, () => ({
+    getCurrentOverlayImage: async () => {
+      const drawCanvas = canvasRef.current;
+      const textLayer = textOverlayRef.current;
+      const wrapper = pageWrapperRef.current;
+      if (!drawCanvas || !wrapper) return null;
+
+      const rect = wrapper.getBoundingClientRect();
+      const w = Math.max(1, Math.floor(rect.width));
+      const h = Math.max(1, Math.floor(rect.height));
+
+      const out = document.createElement('canvas');
+      out.width = w;
+      out.height = h;
+      const ctx = out.getContext('2d');
+      if (!ctx) return null;
+
+      // Draw freehand layer
+      ctx.drawImage(drawCanvas, 0, 0, w, h);
+
+      // Draw text elements
+      if (textLayer) {
+        const children = Array.from(textLayer.children) as HTMLElement[];
+        for (const el of children) {
+          const style = window.getComputedStyle(el);
+          const color = style.color || '#000';
+          const fontSize = parseInt(style.fontSize || '16', 10) || 16;
+          const fontFamily = style.fontFamily || 'sans-serif';
+          ctx.fillStyle = color;
+          ctx.font = `${fontSize}px ${fontFamily}`;
+          const x = parseFloat(el.style.left || '0');
+          const y = parseFloat(el.style.top || '0');
+          const text = el.textContent || '';
+          // support multi-line
+          const lines = text.split(/\n/);
+          let yCursor = y + fontSize; // baseline
+          for (const line of lines) {
+            ctx.fillText(line, x, yCursor);
+            yCursor += fontSize * 1.2;
+          }
+        }
+      }
+
+      const dataUrl = out.toDataURL('image/png');
+      return { dataUrl, width: w, height: h };
+    }
+  }), []);
+
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -366,4 +419,6 @@ export default function PDFViewer({
       </div>
     </div>
   );
-}
+});
+
+export default PDFViewer;
