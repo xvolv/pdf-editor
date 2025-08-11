@@ -1,4 +1,4 @@
-'use client';
+  'use client';
 
 import { useState, useCallback, useRef } from 'react';
 import { Upload, Download, Plus, Minus, RotateCcw, Save, Sparkles } from 'lucide-react';
@@ -10,6 +10,10 @@ import Toolbar from './Toolbar';
 import PageManager from './PageManager';
 import FileUploader from './FileUploader';
 import { PDFDocument } from 'pdf-lib';
+
+// Free tier limits (constants allowed after 'use client')
+const FREE_MAX_PAGES = 10;
+const FREE_MAX_BYTES = 10 * 1024 * 1024; // 10MB
 
 interface PDFEditorState {
   pdfFile: File | null;
@@ -36,6 +40,7 @@ export default function PDFEditor() {
   const [selectedColor, setSelectedColor] = useState<string>('#000000');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<'classic' | 'modern'>('classic');
+  const [upgradeRequired, setUpgradeRequired] = useState<null | { reason: 'size' | 'pages'; pageCount?: number; fileSize?: number }>(null);
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const viewerRef = useRef<PDFViewerHandle | null>(null);
@@ -49,9 +54,32 @@ export default function PDFEditor() {
     setState(prev => ({ ...prev, isLoading: true }));
     
     try {
+      // Check free tier file size first
+      if (file.size > FREE_MAX_BYTES) {
+        setUpgradeRequired({ reason: 'size', fileSize: file.size });
+        setState(prev => ({ ...prev, isLoading: false }));
+        toast({
+          title: 'Upgrade Required',
+          description: 'This file exceeds the 10MB limit for the free tier. Please upgrade to continue.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
       const arrayBuffer = await file.arrayBuffer();
       const pdfDoc = await PDFDocument.load(arrayBuffer);
       const pageCount = pdfDoc.getPageCount();
+
+      if (pageCount > FREE_MAX_PAGES) {
+        setUpgradeRequired({ reason: 'pages', pageCount });
+        setState(prev => ({ ...prev, isLoading: false }));
+        toast({
+          title: 'Upgrade Required',
+          description: `This PDF has ${pageCount} pages, which exceeds the free tier limit of ${FREE_MAX_PAGES}.`,
+          variant: 'destructive',
+        });
+        return;
+      }
 
       setState(prev => ({
         ...prev,
@@ -62,6 +90,9 @@ export default function PDFEditor() {
         annotations: [],
         isLoading: false,
       }));
+
+      // Clear any previous upgrade state on successful load
+      setUpgradeRequired(null);
 
       toast({
         title: "PDF Loaded Successfully",
@@ -388,8 +419,36 @@ export default function PDFEditor() {
         {/* Main Content */}
         <div className="flex-1 flex flex-col overflow-auto min-h-0">
           {!state.pdfFile ? (
-            <div className="flex-1 flex items-center justify-center">
-              <FileUploader onFileSelect={handleFileUpload} />
+            <div className="flex-1 flex items-center justify-center p-6">
+              {upgradeRequired ? (
+                <div className={`max-w-xl w-full rounded-lg border p-6 text-center ${theme === 'modern' ? 'bg-slate-900/50 border-slate-700 text-slate-100' : 'bg-white border-gray-200 text-gray-900'}`}>
+                  <h2 className="text-lg font-semibold mb-2">Upgrade Required</h2>
+                  <p className={`mb-4 ${theme === 'modern' ? 'text-slate-300' : 'text-gray-600'}`}>
+                    {upgradeRequired.reason === 'size' && 'This file exceeds the 10MB limit for the free tier.'}
+                    {upgradeRequired.reason === 'pages' && `This PDF exceeds the free tier limit of ${FREE_MAX_PAGES} pages${upgradeRequired.pageCount ? ` (has ${upgradeRequired.pageCount})` : ''}.`}
+                    {' '}Please upgrade to continue.
+                  </p>
+                  <div className="flex items-center justify-center gap-3">
+                    <a
+                      href="/pricing"
+                      className={`px-4 py-2 rounded-md font-medium ${theme === 'modern' ? 'bg-white text-slate-900 hover:bg-slate-100' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
+                    >
+                      Upgrade Now
+                    </a>
+                    <button
+                      onClick={() => {
+                        setUpgradeRequired(null);
+                        fileInputRef.current?.click();
+                      }}
+                      className={`px-4 py-2 rounded-md border font-medium ${theme === 'modern' ? 'border-slate-600 bg-transparent text-slate-100 hover:bg-slate-800/50' : 'border-gray-300 bg-white text-gray-900 hover:bg-gray-50'}`}
+                    >
+                      Choose Another File
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <FileUploader onFileSelect={handleFileUpload} />
+              )}
             </div>
           ) : (
             <PDFViewer
